@@ -4,6 +4,7 @@
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/skbuff.h>
+#include <linux/timer.h>
 #include <net/pkt_sched.h>
 #include <net/inet_ecn.h>
 
@@ -11,6 +12,15 @@
 #define DQCOUNT_INVALID -1
 #define MAX_PROB  0xffffffff
 #define PIE_SCALE 8
+
+#define from_timer(var, callback_timer, timer_fieldname) \
+	container_of(callback_timer, typeof(*var), timer_fieldname)
+
+static inline void __qdisc_drop(struct sk_buff *skb, struct sk_buff **to_free)
+{
+	skb->next = *to_free;
+	*to_free = skb;
+}
 
 /* parameters used */
 struct pie_params {
@@ -248,21 +258,5 @@ static void calculate_probability(struct Qdisc *sch, struct pie_vars *vars)
 	    (vars->qdelay_old < q->params.target / 2) &&
 	    (vars->prob == 0) &&
 	    (vars->avg_dq_rate > 0))
-		pie_vars_init(&vars);
-}
-
-static void pie_timer(struct timer_list *t)
-{
-	struct pie_sched_data *q = from_timer(q, t, adapt_timer);
-	struct Qdisc *sch = q->sch;
-	spinlock_t *root_lock = qdisc_lock(qdisc_root_sleeping(sch));
-
-	spin_lock(root_lock);
-	calculate_probability(sch);
-
-	/* reset the timer to fire after 'tupdate'. tupdate is in jiffies. */
-	if (q->params.tupdate)
-		mod_timer(&q->adapt_timer, jiffies + q->params.tupdate);
-	spin_unlock(root_lock);
-
+		pie_vars_init(vars);
 }
