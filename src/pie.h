@@ -72,6 +72,185 @@ static void pie_vars_init(struct pie_vars *vars)
 	vars->burst_time = PSCHED_NS2TICKS(100 * NSEC_PER_MSEC);
 }
 
+static void pie_process_dequeue(struct Qdisc *sch, struct pie_vars *vars, struct sk_buff *skb)
+{
+
+	struct pie_sched_data *q = qdisc_priv(sch);
+	int qlen = sch->qstats.backlog;	/* current queue size in bytes */
+
+	/* If current queue is about 10 packets or more and dq_count is unset
+	 * we have enough packets to calculate the drain rate. Save
+	 * current time as dq_tstamp and start measurement cycle.
+	 */
+	if (qlen >= QUEUE_THRESHOLD && vars->dq_count == DQCOUNT_INVALID) {
+		vars->dq_tstamp = psched_get_time();
+		vars->dq_count = 0;
+	}
+
+	/* Calculate the average drain rate from this value.  If queue length
+	 * has receded to a small value viz., <= QUEUE_THRESHOLD bytes,reset
+	 * the dq_count to -1 as we don't have enough packets to calculate the
+	 * drain rate anymore The following if block is entered only when we
+	 * have a substantial queue built up (QUEUE_THRESHOLD bytes or more)
+	 * and we calculate the drain rate for the threshold here.  dq_count is
+	 * in bytes, time difference in psched_time, hence rate is in
+	 * bytes/psched_time.
+	 */
+	if (vars->dq_count != DQCOUNT_INVALID) {
+		vars->dq_count += skb->len;
+
+		if (vars->dq_count >= QUEUE_THRESHOLD) {
+			psched_time_t now = psched_get_time();
+			u32 dtime = now - vars->dq_tstamp;
+			u32 count = vars->dq_count << PIE_SCALE;
+
+			if (dtime == 0)
+				return;
+
+			count = count / dtime;
+
+			if (vars->avg_dq_rate == 0)
+				vars->avg_dq_rate = count;
+			else
+				vars->avg_dq_rate =
+				    (vars->avg_dq_rate -
+				    (vars->avg_dq_rate >> 3)) + (count >> 3);
+
+			/* If the queue has receded below the threshold, we hold
+			 * on to the last drain rate calculated, else we reset
+			 * dq_count to 0 to re-enter the if block when the next
+			 * packet is dequeued
+			 */
+			if (qlen < QUEUE_THRESHOLD)
+				vars->dq_count = DQCOUNT_INVALID;
+			else {
+				vars->dq_count = 0;
+				vars->dq_tstamp = psched_get_time();
+			}
+
+			if (vars->burst_time > 0) {
+				if (vars->burst_time > dtime)
+					vars->burst_time -= dtime;
+				else
+					vars->burst_time = 0;
+			}
+		}
+	}
+}
+
+static void calculate_probability(struct Qdisc *sch, struct pie_vars *vars)
+{
+	struct pie_sched_data *q = qdisc_priv(sch);
+	u32 qlen = sch->qstats.backlog;	/* queue size in bytes */
+	psched_time_t qdelay = 0;	/* in pschedtime */
+	psched_time_t qdelay_old = vars->qdelay;	/* in pschedtime */
+	s32 delta = 0;		/* determines the change in probability */
+	u32 oldprob;
+	u32 alpha, beta;
+	bool update_prob = true;
+
+	vars->qdelay_old = vars->qdelay;
+
+	if (vars->avg_dq_rate > 0)
+		qdelay = (qlen << PIE_SCALE) / vars->avg_dq_rate;
+	else
+		qdelay = 0;
+
+	/* If qdelay is zero and qlen is not, it means qlen is very small, less
+	 * than dequeue_rate, so we do not update probabilty in this round
+	 */
+	if (qdelay == 0 && qlen != 0)
+		update_prob = false;
+
+	/* In the algorithm, alpha and beta are between 0 and 2 with typical
+	 * value for alpha as 0.125. In this implementation, we use values 0-32
+	 * passed from user space to represent this. Also, alpha and beta have
+	 * unit of HZ and need to be scaled before they can used to update
+	 * probability. alpha/beta are updated locally below by 1) scaling them
+	 * appropriately 2) scaling down by 16 to come to 0-2 range.
+	 * Please see paper for details.
+	 *
+	 * We scale alpha and beta differently depending on whether we are in
+	 * light, medium or high dropping mode.
+	 */
+	if (vars->prob < MAX_PROB / 100) {
+		alpha =
+		    (q->params.alpha * (MAX_PROB / PSCHED_TICKS_PER_SEC)) >> 7;
+		beta =
+		    (q->params.beta * (MAX_PROB / PSCHED_TICKS_PER_SEC)) >> 7;
+	} else if (vars->prob < MAX_PROB / 10) {
+		alpha =
+		    (q->params.alpha * (MAX_PROB / PSCHED_TICKS_PER_SEC)) >> 5;
+		beta =
+		    (q->params.beta * (MAX_PROB / PSCHED_TICKS_PER_SEC)) >> 5;
+	} else {
+		alpha =
+		    (q->params.alpha * (MAX_PROB / PSCHED_TICKS_PER_SEC)) >> 4;
+		beta =
+		    (q->params.beta * (MAX_PROB / PSCHED_TICKS_PER_SEC)) >> 4;
+	}
+
+	/* alpha and beta should be between 0 and 32, in multiples of 1/16 */
+	delta += alpha * ((qdelay - q->params.target));
+	delta += beta * ((qdelay - qdelay_old));
+
+	oldprob = vars->prob;
+
+	/* to ensure we increase probability in steps of no more than 2% */
+	if (delta > (s32) (MAX_PROB / (100 / 2)) &&
+	    vars->prob >= MAX_PROB / 10)
+		delta = (MAX_PROB / 100) * 2;
+
+	/* Non-linear drop:
+	 * Tune drop probability to increase quickly for high delays(>= 250ms)
+	 * 250ms is derived through experiments and provides error protection
+	 */
+
+	if (qdelay > (PSCHED_NS2TICKS(250 * NSEC_PER_MSEC)))
+		delta += MAX_PROB / (100 / 2);
+
+	vars->prob += delta;
+
+	if (delta > 0) {
+		/* prevent overflow */
+		if (vars->prob < oldprob) {
+			vars->prob = MAX_PROB;
+			/* Prevent normalization error. If probability is at
+			 * maximum value already, we normalize it here, and
+			 * skip the check to do a non-linear drop in the next
+			 * section.
+			 */
+			update_prob = false;
+		}
+	} else {
+		/* prevent underflow */
+		if (vars->prob > oldprob)
+			vars->prob = 0;
+	}
+
+	/* Non-linear drop in probability: Reduce drop probability quickly if
+	 * delay is 0 for 2 consecutive Tupdate periods.
+	 */
+
+	if ((qdelay == 0) && (qdelay_old == 0) && update_prob)
+		vars->prob = (vars->prob * 98) / 100;
+
+	vars->qdelay = qdelay;
+	vars->qlen_old = qlen;
+
+	/* We restart the measurement cycle if the following conditions are met
+	 * 1. If the delay has been low for 2 consecutive Tupdate periods
+	 * 2. Calculated drop probability is zero
+	 * 3. We have atleast one estimate for the avg_dq_rate ie.,
+	 *    is a non-zero value
+	 */
+	if ((vars->qdelay < q->params.target / 2) &&
+	    (vars->qdelay_old < q->params.target / 2) &&
+	    (vars->prob == 0) &&
+	    (vars->avg_dq_rate > 0))
+		pie_vars_init(&vars);
+}
+
 static void pie_timer(struct timer_list *t)
 {
 	struct pie_sched_data *q = from_timer(q, t, adapt_timer);
