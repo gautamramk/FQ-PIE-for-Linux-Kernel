@@ -96,3 +96,55 @@ References:
  
 
 ----------------------------------------------------------------------
+
+<h1>17th October 2018</h1>
+
+
+<h3> Interpretation of Linux PIE Implementation  </h3>
+
+`drop_early()` : Takes a scheduler and packet size as input. 
+
+Returns false if :
+
+- Burst time left
+- Drop probability is low
+- Queue delay is less than half the target delay
+- Lesser than 2 packets present in scheduler
+
+Returns true if a random number generated is lesser than the calculated probability of drop. Where,
+`prob=prob/mtu * packet_size`
+
+`pie_qdisc_enqueue()` : Takes in packet control information (type:sk_buff) and scheduler. Returns index of the last item in the scheduler
+
+Enqueue occurs when 
+- Packets is not marked to be dropped early
+- ECN is turned on and drop probability is 10%
+
+Packet is dropped if scheduler queue length is >= scheduler limit
+
+
+`pie_process_dequeue()` : Takes in packet control information and scheduler. The functions changes the statistic variables for pie and hence return type is void.
+
+If no packets have been queued and the queue length meets a threshold, then the current time is stored
+
+If packets are ready to be dequeued and queue length is greater than threshold then drain rate is calculated and dequeue count is updated
+
+`drain=drain - (drain>>3 + count>>3)`
+
+Burst time is recalculated to `burst time-dequeue time`
+
+-----------------------
+
+<h3>Linux Kernel Structures Read About</h3>
+
+`qdisc` : Is a scheduler maybe classless or classful. FIFO by default
+`sk_buff` : Doubly linked list containing all control infomation of a packet
+
+
+
+References:
+<ol>
+	<li> http://tldp.org/HOWTO/Traffic-Control-HOWTO/components.html</li>
+	<li> https://wiki.linuxfoundation.org/networking/sk_buff</li>
+</ol>
+
