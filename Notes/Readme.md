@@ -1,7 +1,7 @@
-#3rd October 2018
+<h1>3rd October 2018</h1>
 
 
-###Codel (Controlled Delay)
+<h3>Codel (Controlled Delay)</h3>
 
 - Scheduling algorithm for network schedulers. Network schedulers are a part of a network node.
 
@@ -32,7 +32,7 @@ References:
 [2] : https://tools.ietf.org/html/draft-ietf-aqm-codel-10
 [3] : https://ieeexplore.ieee.org/document/6524283
 -----------------------------------------------------------------------
-###Buffer bloat
+<h3>Buffer bloat</h3>
 
 - Buffers are present to ensure smooth communication between a fast network and a slow network. 
 
@@ -47,7 +47,7 @@ References:
 
 [1] : https://en.wikipedia.org/wiki/Bufferbloat
 ----------------------------------------------------------------------
-###RED (Random Early Detection)
+<h3>RED (Random Early Detection)</h3>
 
 - Probabilistically drops packets. Probability grows as average queue size grows
 
@@ -74,7 +74,7 @@ References:
 [2] : https://pdfs.semanticscholar.org/26a1/af4c2b5f398db1ef7e3f672aae9071c78aea.pdf
 [3] : https://sites.google.com/a/ncsu.edu/tail-drop-vs-red/plan-of-work/red-algorithm
 ----------------------------------------------------------------------
-###PIE (Proportional Integral Controller Enhanced)
+<h3>PIE (Proportional Integral Controller Enhanced)</h3>
 
 - Similary to RED, drops packet randomly during enqueuing 
 
