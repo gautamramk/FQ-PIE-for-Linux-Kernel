@@ -32,7 +32,9 @@ References:
 	<li> https://tools.ietf.org/html/draft-ietf-aqm-codel-10 </li>
 	<li> https://ieeexplore.ieee.org/document/6524283 </li>
 </ol>
+
 -----------------------------------------------------------------------
+
 <h3>Buffer bloat</h3>
 
 - Buffers are present to ensure smooth communication between a fast network and a slow network. 
@@ -137,7 +139,7 @@ Burst time is recalculated to `burst time-dequeue time`
 
 <h3>Linux Kernel Structures Read About</h3>
 
-`qdisc` : Is a scheduler maybe classless or classful. FIFO by default
+`qdisc` : Is a scheduler maybe classless or classful. FIFO by default <br/>
 `sk_buff` : Doubly linked list containing all control infomation of a packet
 
 
