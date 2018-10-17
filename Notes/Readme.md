@@ -27,10 +27,11 @@ Algorithm:
 - Dropping Intervals are set as - 100 , 100/root(2) , 100/root(3) , 100/root(4) ... where 2,3,4,5... signify the number of packets dropped
 
 References:
-
-[1] : https://en.wikipedia.org/wiki/CoDel
-[2] : https://tools.ietf.org/html/draft-ietf-aqm-codel-10
-[3] : https://ieeexplore.ieee.org/document/6524283
+<ol>
+	<li> https://en.wikipedia.org/wiki/CoDel </li>
+	<li> https://tools.ietf.org/html/draft-ietf-aqm-codel-10 </li>
+	<li> https://ieeexplore.ieee.org/document/6524283 </li>
+</ol>
 -----------------------------------------------------------------------
 <h3>Buffer bloat</h3>
 
@@ -45,7 +46,10 @@ References:
 
 References:
 
-[1] : https://en.wikipedia.org/wiki/Bufferbloat
+<ol>
+	<li> https://en.wikipedia.org/wiki/Bufferbloat </li>
+</ol>
+
 ----------------------------------------------------------------------
 <h3>RED (Random Early Detection)</h3>
 
@@ -69,10 +73,12 @@ References:
 - Keeps track of a minimum and maximum threshold for queue size. If the  number of packets is below minimum, no packets are marked. If the number of packets is above maximum, all packets are marked. If number of packets is within both the bounds, packets are maked probabilistically. Marked packets are dropped.
 
 References:
+<ol>
+	<li> https://en.wikipedia.org/wiki/Random_early_detection </li>
+	<li> https://pdfs.semanticscholar.org/26a1/af4c2b5f398db1ef7e3f672aae9071c78aea.pdf</li>
+	<li> https://sites.google.com/a/ncsu.edu/tail-drop-vs-red/plan-of-work/red-algorithm </li>
+</ol>
 
-[1] : https://en.wikipedia.org/wiki/Random_early_detection
-[2] : https://pdfs.semanticscholar.org/26a1/af4c2b5f398db1ef7e3f672aae9071c78aea.pdf
-[3] : https://sites.google.com/a/ncsu.edu/tail-drop-vs-red/plan-of-work/red-algorithm
 ----------------------------------------------------------------------
 <h3>PIE (Proportional Integral Controller Enhanced)</h3>
 
@@ -84,6 +90,9 @@ References:
 
 - Drop probability is reduced if queueing latency is below a threshold limit
 
-[1] : https://tools.ietf.org/html/draft-ietf-aqm-pie-10
+<ol>
+	<li> https://tools.ietf.org/html/draft-ietf-aqm-pie-10 </li>
+</ol>
+ 
 
 ----------------------------------------------------------------------
