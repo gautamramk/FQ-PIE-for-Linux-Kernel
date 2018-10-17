@@ -9,8 +9,6 @@
 
  - Solves bufferbloat by ensuring minimum delay faced by packets stays below 5ms
 
-- Has no parameters to set
-
 - Adapts dynamically to changing link rates
 
 - Simple implementation
@@ -98,7 +96,20 @@ References:
  
 
 ----------------------------------------------------------------------
+## FQ-CoDel
 
+### Synopsis
+FQ-CoDel aims to control queuing delays while sharing bottleneck capacity relatively evenly among competing flows. FQ-CoDel’s modified DRR (Deficit Round Robin) scheduler manages two lists of queues – old queues and new queues – to provide brief periods of priority to lightweight or short burst flows. FQ-CoDel’s internal, dynamically created queues are controlled by separate instances of CoDel AQM (including separate state variables per queue).
+
+### Parameters
+FQ-CoDel has five primary parameters (target, interval, quantum, limit and flows) and one option ([no]ecn) to enable or disable ECN. 
+- quantum is number of bytes a queue can be served before being moved to the tail of old queues list. 
+- limit is the hard size limit of all queues managed by an instance of the fq_codel scheduler. 
+-  flows is number of flow queues that fq_codel creates and manages.
+
+ The other parameters are the same as CoDel parameters.
+
+__________________________________________________________
 <h1>17th October 2018</h1>
 
 
