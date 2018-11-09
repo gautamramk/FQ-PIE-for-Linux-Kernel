@@ -75,7 +75,22 @@ There exists different methods to calculate latency, but we have followed the fo
     current_qdelay = queue_.byte_length()/dequeue_rate
 
 
+### Steps to reproduce
 
+### Experimentation
+
+### Procedure
+
+### Observations
+
+### References
+
+[1] -  The FlowQueue-CoDel Packet Scheduler and Active Queue Management Algorithm 		  https://tools.ietf.org/html/draft-ietf-aqm-fq-codel-06
+
+[2]  Proportional Integral Controller Enhanced (PIE): A Lightweight Control Scheme to Address the Bufferbloat Problem
+https://tools.ietf.org/html/rfc8033
+
+[3] R. Pan _et al_. "PIE: A lightweight control scheme to address the bufferbloat problem," _2013 IEEE 14th International Conference on High Performance Switching and Routing (HPSR)_, Taipei, 2013, pp. 148-155.  
 
 
 
