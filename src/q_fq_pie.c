@@ -181,7 +181,7 @@ static int fq_pie_print_opt(struct qdisc_util *qu, FILE *f, struct rtattr *opt)
 
 	if (tb[TCA_FQ_PIE_LIMIT] &&
 	    RTA_PAYLOAD(tb[TCA_FQ_PIE_LIMIT]) >= sizeof(__u32)) {
-		limit = rta_getattr_u32(tb[TCA_FQ_CODEL_LIMIT]);
+		limit = rta_getattr_u32(tb[TCA_FQ_PIE_LIMIT]);
 		print_uint(PRINT_ANY, "limit", "limit %up ", limit);
 	}
 	if (tb[TCA_FQ_PIE_FLOWS] &&
