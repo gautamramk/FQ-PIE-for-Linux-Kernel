@@ -1,0 +1,123 @@
+.TH FQ_PIE 8 "5 November 2018" "iproute2" "Linux"
+.SH NAME
+PIE \- Fair Queuing (FQ) with Proportional Integral Controller - Enhanced (PIE)
+.SH SYNOPSIS
+.B tc qdisc ... fq_pie
+[
+.B limit
+PACKETS ] [[
+.B flows
+NUMBER ] [
+.B quantum
+BYTES ]
+.B target
+TIME ] [
+.B tupdate
+TIME ] [
+.B alpha
+int ] [
+.B beta
+int ] [
+.B ecn
+|
+.B noecn
+] [
+.B memory_limit
+BYTES ]
+
+.SH DESCRIPTION
+FQ_PIE (Fair Queuing with Proportional Integral Controller - Enhanced) is a queuing discipline that combines Fair
+Queuing with the PIE AQM scheme. FQ_PIE uses a Jenkins hash function to classify
+incoming packets into different flows and is used to provide a fair share of the
+bandwidth to all the flows using the queue. Each such flow is managed by the
+PIE queuing discipline.
+
+.SH ALGORITHM
+The FQ-PIE algorithm consists of two logical parts: the scheduler which selects which queue to dequeue a packet from, and the PIE AQM
+which works on each of the queues. The major work of FQ-PIE is in mostly in the scheduling part. The interaction between the scheduler and the
+PIE algorithm is straight-forward.
+
+During the enqueue stage, a hashing-based scheme is used, where flows are hashed into a number of buckets which each has its own queue.  The
+number of buckets is configurable, and presently defaults to 1024 in our implementation. The flow hashing is performed on the 5-tuple of source
+and destination IP addresses and port numbers and IP protocol number. Once the packet has been successfully classified into a queue, it is handed over
+to the PIE algorithm for time-stamping.It is then added to the tail of the selected queue, and the queue's byte count is updated by the packet size.
+Then, if the queue is not currently active (i.e., if it is not in either the list of new or the list of old queues), it is added to the end of the list of new queues, and
+its number of credits is initiated to the configured quantum. Otherwise, the queue is left in its current queue list.
+
+During the dequeue stage, the scheduler first looks at the list of new queues; for the queue at the head of that list, if that queue has a negative number of credits
+(i.e., it has already dequeued at least a quantum of bytes), it is given an additional quantum of credits, the queue is put onto _the end of_ the list of old queues, and the
+outine selects the next queue and starts again. Otherwise, that queue is selected for dequeue.  If the list of new queues is empty, the scheduler proceeds down the list of old queues
+in the same fashion (checking the credits, and either selecting the queue for dequeuing, or adding credits and putting the queue back at the end of the list). After having selected a queue from which to dequeue a packet, the
+PIE algorithm is invoked on that queue.
+
+
+Finally, if the PIE algorithm does not return a packet, then the queue must be empty, and the scheduler does one of two things:
+
+If the queue selected for dequeue came from the list of new queues, it is moved to _the end of_ the list of old queues.
+If instead it came from the list of old queues, that queue is removed from the list, to be added back (as a new queue) the next time a packet arrives that
+hashes to that queue.  Then (since no packet was available for dequeue), the whole dequeue process is restarted from the beginning.
+
+If, instead, the scheduler _did_ get a packet back from the PIE algorithm, it subtracts the size of the packet from the byte credits for the selected queue and returns the packet as the result of the
+dequeue operation.
+
+
+
+.SH PARAMETERS
+.SS limit
+limit on the queue size in packets. Incoming packets are dropped when this limit
+is reached. Default is 1000 packets.
+
+
+.SS flows
+is the number of flows into which the incoming packets are classified. Due to
+the stochastic nature of hashing, multiple flows may end up being hashed into
+the same slot. Newer flows have priority over older ones. This parameter can be
+set only at load time since memory has to be allocated for the hash table.
+Default value is 1024.
+
+
+.SS quantum
+//left to be done
+
+.SS ecn | noecn
+has the same semantics as
+.B pie
+and can be used to mark packets instead of dropping them. If
+.B ecn
+has been enabled,
+.B noecn
+can be used to turn it off and vice-a-versa.
+
+.SS target
+is the expected queue delay. The default target delay is 15ms.
+
+.SS tupdate
+is the frequency at which the system drop probability is calculated. The default is 15ms.
+
+.SS alpha
+.SS beta
+alpha and beta are parameters chosen to control the drop probability. These
+should be in the range between 0 and 32.
+
+
+.SS bytemode | nobytemode
+is used to scale drop probability proportional to packet size
+.B bytemode
+to turn on bytemode,
+.B nobytemode
+to turn off bytemode. By default,
+.B bytemode
+is turned off.
+
+.SH EXAMPLES
+
+//left to be done
+
+.SH SEE ALSO
+.BR tc-fq_codel (8),
+.BR tc-pie (8)
+
+.SH AUTHORS
+FQ_PIE was implemented by Gautam Ramakrishnan, Mohit Bhasi, V. Saicharan. This manpage was written
+by V.Saicharan and Mohit Bhasi. Please report corrections to the Linux Networking
+mailing list <netdev@vger.kernel.org>.
