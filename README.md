@@ -75,15 +75,7 @@ There exists different methods to calculate latency, but we have followed the fo
     current_qdelay = queue_.byte_length()/dequeue_rate
 
 
-### Steps to reproduce
 
-### Experimentation
-
-### Procedure
-
-### Observations
-
-### References
 
 [1] -  The FlowQueue-CoDel Packet Scheduler and Active Queue Management Algorithm 		  https://tools.ietf.org/html/draft-ietf-aqm-fq-codel-06
 
