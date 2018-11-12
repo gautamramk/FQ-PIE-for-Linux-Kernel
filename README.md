@@ -75,7 +75,7 @@ There exists different methods to calculate latency, but we have followed the fo
     current_qdelay = queue_.byte_length()/dequeue_rate
 
 
-This page describes the implementation of FQ-PIE in C.
+The following sections describe the implementation of FQ-PIE in the Linux kernel.
 
 ## Changes in File Structuring
 The original sch_pie.c code was taken, and the necessary pie queue management functions, i.e enqueue, dequeue functions were transferred to pie.h.
