@@ -222,7 +222,7 @@ static int fq_pie_print_opt(struct qdisc_util *qu, FILE *f, struct rtattr *opt)
 		tupdate = rta_getattr_u32(tb[TCA_FQ_PIE_TUPDATE]);
         print_uint(PRINT_JSON, "tupdate", NULL, tupdate);
 		print_string(PRINT_FP, NULL, "tupdate %s ",
-			     sprint_time(target, b1));
+			     sprint_time(tupdate, b1));
 	}
     if (tb[TCA_FQ_PIE_BYTEMODE] &&
 	    RTA_PAYLOAD(tb[TCA_FQ_PIE_BYTEMODE]) >= sizeof(__u32)) {
