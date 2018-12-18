@@ -52,7 +52,7 @@ static void explain(void)
 	fprintf(stderr, "Usage: ... fq_pie [ limit PACKETS ] [ flows NUMBER ]\n");
     fprintf(stderr, "                  [alpha NUMBER] [beta NUMBER]        ");
 	fprintf(stderr, "                    [ target TIME us] [tupdate TIME us]\n");
-	fprintf(stderr, "                    [bytemode] [ quantum BYTES ] [ [no]ecn ]\n");
+	fprintf(stderr, "                    [bytemode] [ quantum BYTES ] [ [no]ecn ] [ecnprob PERCENTAGE]\n");
 }
 
 #define ALPHA_MAX 32
@@ -68,6 +68,7 @@ static int fq_pie_parse_opt(struct qdisc_util *qu, int argc, char **argv,
 	unsigned int alpha = 0;
     unsigned int beta = 0;
     unsigned int tupdate = 0;
+	unsigned int ecn_prob = 0;
     int bytemode = -1;
 	int ecn = -1;
 	struct rtattr *tail;
@@ -111,7 +112,13 @@ static int fq_pie_parse_opt(struct qdisc_util *qu, int argc, char **argv,
 				fprintf(stderr, "Illegal \"tupdate\"\n");
 				return -1;
 			}
-		}  else if (strcmp(*argv, "bytemode") == 0) {
+		}else if (strcmp(*argv, "ecnprob") == 0 ) {
+            NEXT_ARG();
+			if (get_unsigned(&ecn_prob, *argv, 0) || ecn_prob >= 100) {
+				fprintf(stderr, "Illegal ecnprob");
+				return -1;
+			}
+		}else if (strcmp(*argv, "bytemode") == 0) {
 			bytemode = 1;
 		}  else if (strcmp(*argv, "nobytemode") == 0) {
 			bytemode = 0;
@@ -145,6 +152,8 @@ static int fq_pie_parse_opt(struct qdisc_util *qu, int argc, char **argv,
 		addattr_l(n, 1024, TCA_FQ_PIE_QUANTUM, &quantum, sizeof(quantum));
 	if (target)
 		addattr_l(n, 1024, TCA_FQ_PIE_TARGET, &target, sizeof(target));
+	if (ecn_prob)
+	    addattr_l(n, 1024, TCA_FQ_PIE_ECN_PROB, &ecn_prob, sizeof(ecn_prob));
 	if (ecn != -1)
 		addattr_l(n, 1024, TCA_FQ_PIE_ECN, &ecn, sizeof(ecn));
     if (alpha)
@@ -169,6 +178,7 @@ static int fq_pie_print_opt(struct qdisc_util *qu, FILE *f, struct rtattr *opt)
 	unsigned int alpha = 0;
     unsigned int beta = 0;
     unsigned int tupdate = 0;
+	unsigned int ecn_prob = 0;
     int bytemode = -1;
 	int ecn = -1;
 
@@ -181,7 +191,7 @@ static int fq_pie_print_opt(struct qdisc_util *qu, FILE *f, struct rtattr *opt)
 
 	if (tb[TCA_FQ_PIE_LIMIT] &&
 	    RTA_PAYLOAD(tb[TCA_FQ_PIE_LIMIT]) >= sizeof(__u32)) {
-		limit = rta_getattr_u32(tb[TCA_FQ_PIE_LIMIT]);
+		limit = rta_getattr_u32(tb[TCA_FQ_CODEL_LIMIT]);
 		print_uint(PRINT_ANY, "limit", "limit %up ", limit);
 	}
 	if (tb[TCA_FQ_PIE_FLOWS] &&
@@ -210,6 +220,11 @@ static int fq_pie_print_opt(struct qdisc_util *qu, FILE *f, struct rtattr *opt)
 		print_uint(PRINT_JSON, "target", NULL, target);
 		print_string(PRINT_FP, NULL, "target %s ",
 			     sprint_time(target, b1));
+	}
+	if (tb[TCA_FQ_PIE_ECN_PROB] &&
+	    RTA_PAYLOAD(tb[TCA_FQ_PIE_ECN_PROB]) >= sizeof(__u32)) {
+		ecn_prob = rta_getattr_u32(tb[TCA_FQ_PIE_ECN_PROB]);
+		print_uint(PRINT_ANY, "ecn_prob", "ecnprob %u ", ecn_prob);
 	}
 	if (tb[TCA_FQ_PIE_ECN] &&
 	    RTA_PAYLOAD(tb[TCA_FQ_PIE_ECN]) >= sizeof(__u32)) {

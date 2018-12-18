@@ -23,6 +23,12 @@ struct fq_pie_stats {
     u32 new_flow_count;     /* number of time packets created a new flow */
 };
 
+struct fq_pie_params {
+    struct pie_params params_pie;
+    u32 ecn_prob;
+    u32 flows_cnt;
+};
+
 struct fq_pie_flow {
     struct sk_buff *head;
     struct sk_buff *tail;
@@ -35,10 +41,9 @@ struct fq_pie_flow {
 };
 
 struct fq_pie_sched_data {
-    u32 flows_cnt;
     u32 quantum;
     struct fq_pie_flow *flows;
-    struct pie_params params;
+    struct fq_pie_params params;
     struct fq_pie_stats stats;
     struct Qdisc *sch;
     struct timer_list adapt_timer;
@@ -49,7 +54,7 @@ struct fq_pie_sched_data {
 static unsigned int fq_pie_hash(const struct fq_pie_sched_data *q,
                   struct sk_buff *skb)
 {	
-    return reciprocal_scale(skb_get_hash(skb), q->flows_cnt);
+    return reciprocal_scale(skb_get_hash(skb), q->params.flows_cnt);
 }
 
 static unsigned int fq_pie_classify(struct sk_buff *skb, struct Qdisc *sch,
@@ -85,7 +90,7 @@ static bool drop_early(struct Qdisc *sch, struct fq_pie_flow *flow, u32 packet_s
     /* If current delay is less than half of target, and
      * if drop prob is low already, disable early_drop
      */
-    if ((flow->vars.qdelay < q->params.target / 2)
+    if ((flow->vars.qdelay < q->params.params_pie.target / 2)
         && (flow->vars.prob < MAX_PROB / 5))
         return false;
 
@@ -98,7 +103,7 @@ static bool drop_early(struct Qdisc *sch, struct fq_pie_flow *flow, u32 packet_s
     /* If bytemode is turned on, use packet size to compute new
      * probablity. Smaller packets will have lower drop prob in this case
      */
-    if (q->params.bytemode && packet_size <= mtu)
+    if (q->params.params_pie.bytemode && packet_size <= mtu)
         local_prob = (local_prob / mtu) * packet_size;
     else
         local_prob = flow->vars.prob;
@@ -137,7 +142,7 @@ static int fq_pie_qdisc_enqueue(struct sk_buff *skb, struct Qdisc *sch,
     
     if (!drop_early(sch, sel_flow, skb->len)) {
         enqueue = true;
-    } else if (q->params.ecn && (sel_flow->vars.prob <= MAX_PROB / 10) &&
+    } else if (q->params.params_pie.ecn && (sel_flow->vars.prob <= (MAX_PROB / 100)*q->params.ecn_prob) &&
            INET_ECN_set_ce(skb)) {
         /* If packet is ecn capable, mark it if drop probability
          * is lower than 10%, else drop it.
@@ -236,13 +241,13 @@ static void fq_pie_timer(struct timer_list *t)
 
     spin_lock(root_lock);
 
-    for(i = 0; i < q->flows_cnt; i++){
-        calculate_probability(q->flows[i].backlog, &q->params, &q->flows[i].vars);
+    for(i = 0; i < q->params.flows_cnt; i++){
+        calculate_probability(q->flows[i].backlog, &(q->params.params_pie), &q->flows[i].vars);
     }
     
     // reset the timer to fire after 'tupdate'. tupdate is in jiffies. 
-    if (q->params.tupdate)
-        mod_timer(&q->adapt_timer, jiffies + q->params.tupdate);
+    if (q->params.params_pie.tupdate)
+        mod_timer(&q->adapt_timer, jiffies + q->params.params_pie.tupdate);
     spin_unlock(root_lock);
     
 }
@@ -256,7 +261,8 @@ static const struct nla_policy fq_pie_policy[TCA_FQ_PIE_MAX + 1] = {
     [TCA_FQ_PIE_ECN] = {.type = NLA_U32},
     [TCA_FQ_PIE_QUANTUM] = {.type = NLA_U32},
     [TCA_FQ_PIE_BYTEMODE] = {.type = NLA_U32},
-    [TCA_FQ_PIE_FLOWS] = {.type = NLA_U32}
+    [TCA_FQ_PIE_FLOWS] = {.type = NLA_U32},
+    [TCA_FQ_PIE_ECN_PROB] = {.type = NLA_U32}
 };
 
 static int fq_pie_change(struct Qdisc *sch, struct nlattr *opt,
@@ -279,9 +285,9 @@ static int fq_pie_change(struct Qdisc *sch, struct nlattr *opt,
     if (tb[TCA_FQ_PIE_FLOWS]) {
         if (q->flows)
             return -EINVAL;
-        q->flows_cnt = nla_get_u32(tb[TCA_FQ_PIE_FLOWS]);
-        if (!q->flows_cnt ||
-            q->flows_cnt > 65536)
+        q->params.flows_cnt = nla_get_u32(tb[TCA_FQ_PIE_FLOWS]);
+        if (!q->params.flows_cnt ||
+            q->params.flows_cnt > 65536)
             return -EINVAL;
     }
 
@@ -293,33 +299,37 @@ static int fq_pie_change(struct Qdisc *sch, struct nlattr *opt,
         u32 target = nla_get_u32(tb[TCA_FQ_PIE_TARGET]);
 
         /* convert to pschedtime */
-        q->params.target = PSCHED_NS2TICKS((u64)target * NSEC_PER_USEC);
+        q->params.params_pie.target = PSCHED_NS2TICKS((u64)target * NSEC_PER_USEC);
     }
 
     /* tupdate is in jiffies */
     if (tb[TCA_FQ_PIE_TUPDATE])
-        q->params.tupdate = usecs_to_jiffies(nla_get_u32(tb[TCA_FQ_PIE_TUPDATE]));
+        q->params.params_pie.tupdate = usecs_to_jiffies(nla_get_u32(tb[TCA_FQ_PIE_TUPDATE]));
 
     if (tb[TCA_FQ_PIE_LIMIT]) {
         u32 limit = nla_get_u32(tb[TCA_FQ_PIE_LIMIT]);
 
-        q->params.limit = limit;
+        q->params.params_pie.limit = limit;
         sch->limit = limit;
     }
 
+    if(tb[TCA_FQ_PIE_ECN_PROB]) {
+        q->params.ecn_prob = nla_get_u32(tb[TCA_FQ_PIE_ECN_PROB]);
+    }
+
     if (tb[TCA_FQ_PIE_ALPHA])
-        q->params.alpha = nla_get_u32(tb[TCA_FQ_PIE_ALPHA]);
+        q->params.params_pie.alpha = nla_get_u32(tb[TCA_FQ_PIE_ALPHA]);
 
     if (tb[TCA_FQ_PIE_BETA])
-        q->params.beta = nla_get_u32(tb[TCA_FQ_PIE_BETA]);
+        q->params.params_pie.beta = nla_get_u32(tb[TCA_FQ_PIE_BETA]);
 
     if (tb[TCA_FQ_PIE_ECN])
-        q->params.ecn = nla_get_u32(tb[TCA_FQ_PIE_ECN]);
+        q->params.params_pie.ecn = nla_get_u32(tb[TCA_FQ_PIE_ECN]);
 
     if (tb[TCA_FQ_PIE_QUANTUM])
     {
         q->quantum = nla_get_u32(tb[TCA_FQ_PIE_QUANTUM]);
-        for(i = 0; i < q->flows_cnt; i++)
+        for(i = 0; i < q->params.flows_cnt; i++)
         {
             if(q->flows[i].deficit > q->quantum)
             {
@@ -330,7 +340,7 @@ static int fq_pie_change(struct Qdisc *sch, struct nlattr *opt,
     }
 
     if (tb[TCA_FQ_PIE_BYTEMODE])
-        q->params.bytemode = nla_get_u32(tb[TCA_FQ_PIE_BYTEMODE]);
+        q->params.params_pie.bytemode = nla_get_u32(tb[TCA_FQ_PIE_BYTEMODE]);
 
     /* Drop excess packets if new limit is lower */
     qlen = sch->q.qlen;
@@ -350,10 +360,11 @@ static int fq_pie_init(struct Qdisc *sch, struct nlattr *opt,
 {
     struct fq_pie_sched_data *q = qdisc_priv(sch);
 
-    pie_params_init(&q->params);
+    pie_params_init(&(q->params.params_pie));
     sch->limit = 10*1024;
-    q->params.limit = sch->limit;
-    q->flows_cnt = 1024;
+    q->params.ecn_prob = 10;
+    q->params.params_pie.limit = sch->limit;
+    q->params.flows_cnt = 1024;
     q->quantum = psched_mtu(qdisc_dev(sch));
     q->sch = sch;
 
@@ -373,14 +384,14 @@ static int fq_pie_init(struct Qdisc *sch, struct nlattr *opt,
     }
 
     if (!q->flows) {
-        q->flows = kvcalloc(q->flows_cnt,
+        q->flows = kvcalloc(q->params.flows_cnt,
                     sizeof(struct fq_pie_flow),
                     GFP_KERNEL);
         if (!q->flows) {
             err = -ENOMEM;
             goto init_failure;
         }
-        for (i = 0; i < q->flows_cnt; i++) {
+        for (i = 0; i < q->params.flows_cnt; i++) {
             struct fq_pie_flow *flow = q->flows + i;
             INIT_LIST_HEAD(&flow->flowchain);
             pie_vars_init(&flow->vars);
@@ -389,7 +400,7 @@ static int fq_pie_init(struct Qdisc *sch, struct nlattr *opt,
     return 0;
 
     init_failure:
-        q->flows_cnt = 0;
+        q->params.flows_cnt = 0;
     return err;
 }
 
@@ -404,16 +415,17 @@ static int fq_pie_dump(struct Qdisc *sch, struct sk_buff *skb)
 
     /* convert target from pschedtime to us */
     if (nla_put_u32(skb, TCA_FQ_PIE_TARGET,
-        ((u32) PSCHED_TICKS2NS(q->params.target)) /
+        ((u32) PSCHED_TICKS2NS(q->params.params_pie.target)) /
         NSEC_PER_USEC) ||
         nla_put_u32(skb, TCA_FQ_PIE_LIMIT, sch->limit) ||
-        nla_put_u32(skb, TCA_FQ_PIE_TUPDATE, jiffies_to_usecs(q->params.tupdate)) ||
-        nla_put_u32(skb, TCA_FQ_PIE_ALPHA, q->params.alpha) ||
-        nla_put_u32(skb, TCA_FQ_PIE_BETA, q->params.beta) ||
-        nla_put_u32(skb, TCA_FQ_PIE_ECN, q->params.ecn) ||
-        nla_put_u32(skb, TCA_FQ_PIE_BYTEMODE, q->params.bytemode) ||
+        nla_put_u32(skb, TCA_FQ_PIE_TUPDATE, jiffies_to_usecs(q->params.params_pie.tupdate)) ||
+        nla_put_u32(skb, TCA_FQ_PIE_ALPHA, q->params.params_pie.alpha) ||
+        nla_put_u32(skb, TCA_FQ_PIE_BETA, q->params.params_pie.beta) ||
+        nla_put_u32(skb, TCA_FQ_PIE_ECN, q->params.params_pie.ecn) ||
+        nla_put_u32(skb, TCA_FQ_PIE_BYTEMODE, q->params.params_pie.bytemode) ||
         nla_put_u32(skb, TCA_FQ_PIE_QUANTUM, q->quantum) ||
-        nla_put_u32(skb, TCA_FQ_PIE_FLOWS, q->flows_cnt))
+        nla_put_u32(skb, TCA_FQ_PIE_FLOWS, q->params.flows_cnt) ||
+        nla_put_u32(skb, TCA_FQ_PIE_ECN_PROB, q->params.ecn_prob))
         goto nla_put_failure;
 
     return nla_nest_end(skb, opts);
@@ -449,7 +461,6 @@ static int fq_pie_dump_stats(struct Qdisc *sch, struct gnet_dump *d)
 static void fq_pie_destroy(struct Qdisc *sch)
 {
     struct fq_pie_sched_data *q = qdisc_priv(sch);
-    q->params.tupdate = 0;
     kvfree(q->flows);
     del_timer_sync(&q->adapt_timer);
 }
