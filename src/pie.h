@@ -13,15 +13,6 @@
 #define MAX_PROB  0xffffffff
 #define PIE_SCALE 8
 
-/*#define from_timer(var, callback_timer, timer_fieldname) \
-	container_of(callback_timer, typeof(*var), timer_fieldname)
-
-static inline void __qdisc_drop(struct sk_buff *skb, struct sk_buff **to_free)
-{
-	skb->next = *to_free;
-	*to_free = skb;
-}
-*///For testing in my computer. Not needed in newer kernel versions.
 /* parameters used */
 struct pie_params {
 	psched_time_t target;	/* user specified target delay in pschedtime */
