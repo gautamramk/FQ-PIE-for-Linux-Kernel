@@ -36,44 +36,6 @@
 #define DQCOUNT_INVALID -1
 #define MAX_PROB  0xffffffff
 #define PIE_SCALE 8
-static bool drop_early(struct Qdisc *sch, u32 packet_size)
-{
-	struct pie_sched_data *q = qdisc_priv(sch);
-	u32 rnd;
-	u32 local_prob = q->vars.prob;
-	u32 mtu = psched_mtu(qdisc_dev(sch));
-
-	/* If there is still burst allowance left skip random early drop */
-	if (q->vars.burst_time > 0)
-		return false;
-
-	/* If current delay is less than half of target, and
-	 * if drop prob is low already, disable early_drop
-	 */
-	if ((q->vars.qdelay < q->params.target / 2)
-	    && (q->vars.prob < MAX_PROB / 5))
-		return false;
-
-	/* If we have fewer than 2 mtu-sized packets, disable drop_early,
-	 * similar to min_th in RED
-	 */
-	if (sch->qstats.backlog < 2 * mtu)
-		return false;
-
-	/* If bytemode is turned on, use packet size to compute new
-	 * probablity. Smaller packets will have lower drop prob in this case
-	 */
-	if (q->params.bytemode && packet_size <= mtu)
-		local_prob = (local_prob / mtu) * packet_size;
-	else
-		local_prob = q->vars.prob;
-
-	rnd = prandom_u32();
-	if (rnd < local_prob)
-		return true;
-
-	return false;
-}
 
 static int pie_qdisc_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 			     struct sk_buff **to_free)
@@ -86,7 +48,7 @@ static int pie_qdisc_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 		goto out;
 	}
 
-	if (!drop_early(sch, skb->len)) {
+	if (!drop_early(sch, sch->qstats.backlog, &q->vars, &q->params, skb->len)) {
 		enqueue = true;
 	} else if (q->params.ecn && (q->vars.prob <= MAX_PROB / 10) &&
 		   INET_ECN_set_ce(skb)) {
@@ -190,15 +152,15 @@ static void pie_timer(struct timer_list *t)
 	struct pie_sched_data *q = from_timer(q, t, adapt_timer);
 	struct Qdisc *sch = q->sch;
 	spinlock_t *root_lock = qdisc_lock(qdisc_root_sleeping(sch));
-	u32 qlen=sch->qstats.backlog;
+	u32 qlen = sch->qstats.backlog;
+
 	spin_lock(root_lock);
-	calculate_probability(qlen,&q->params,&q->vars); 
+	calculate_probability(qlen, &q->params, &q->vars);
 
 	/* reset the timer to fire after 'tupdate'. tupdate is in jiffies. */
 	if (q->params.tupdate)
 		mod_timer(&q->adapt_timer, jiffies + q->params.tupdate);
 	spin_unlock(root_lock);
-
 }
 
 static int pie_init(struct Qdisc *sch, struct nlattr *opt,
@@ -230,12 +192,12 @@ static int pie_dump(struct Qdisc *sch, struct sk_buff *skb)
 	struct nlattr *opts;
 
 	opts = nla_nest_start(skb, TCA_OPTIONS);
-	if (opts == NULL)
+	if (!opts)
 		goto nla_put_failure;
 
 	/* convert target from pschedtime to us */
 	if (nla_put_u32(skb, TCA_PIE_TARGET,
-			((u32) PSCHED_TICKS2NS(q->params.target)) /
+			((u32)PSCHED_TICKS2NS(q->params.target)) /
 			NSEC_PER_USEC) ||
 	    nla_put_u32(skb, TCA_PIE_LIMIT, sch->limit) ||
 	    nla_put_u32(skb, TCA_PIE_TUPDATE, jiffies_to_usecs(q->params.tupdate)) ||
@@ -250,7 +212,6 @@ static int pie_dump(struct Qdisc *sch, struct sk_buff *skb)
 nla_put_failure:
 	nla_nest_cancel(skb, opts);
 	return -1;
-
 }
 
 static int pie_dump_stats(struct Qdisc *sch, struct gnet_dump *d)
@@ -258,7 +219,7 @@ static int pie_dump_stats(struct Qdisc *sch, struct gnet_dump *d)
 	struct pie_sched_data *q = qdisc_priv(sch);
 	struct tc_pie_xstats st = {
 		.prob		= q->vars.prob,
-		.delay		= ((u32) PSCHED_TICKS2NS(q->vars.qdelay)) /
+		.delay		= ((u32)PSCHED_TICKS2NS(q->vars.qdelay)) /
 				   NSEC_PER_USEC,
 		/* unscale and return dq_rate in bytes per sec */
 		.avg_dq_rate	= q->vars.avg_dq_rate *
@@ -275,21 +236,21 @@ static int pie_dump_stats(struct Qdisc *sch, struct gnet_dump *d)
 
 static struct sk_buff *pie_qdisc_dequeue(struct Qdisc *sch)
 {
+	struct pie_sched_data *q = qdisc_priv(sch);
 	struct sk_buff *skb;
-	skb = qdisc_dequeue_head(sch);
+	u32 qlen = sch->qstats.backlog;
 
+	skb = qdisc_dequeue_head(sch);
 	if (!skb)
 		return NULL;
-
-	struct pie_sched_data *q = qdisc_priv(sch);
-	u32 qlen=sch->qstats.backlog;
-	pie_process_dequeue(qlen,&q->vars, skb);
+	pie_process_dequeue(qlen, &q->vars, skb);
 	return skb;
 }
 
 static void pie_reset(struct Qdisc *sch)
 {
 	struct pie_sched_data *q = qdisc_priv(sch);
+
 	qdisc_reset_queue(sch);
 	pie_vars_init(&q->vars);
 }
@@ -297,6 +258,7 @@ static void pie_reset(struct Qdisc *sch)
 static void pie_destroy(struct Qdisc *sch)
 {
 	struct pie_sched_data *q = qdisc_priv(sch);
+
 	q->params.tupdate = 0;
 	del_timer_sync(&q->adapt_timer);
 }

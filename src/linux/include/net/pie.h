@@ -73,7 +73,47 @@ static void pie_vars_init(struct pie_vars *vars)
 	vars->burst_time = PSCHED_NS2TICKS(100 * NSEC_PER_MSEC);
 }
 
-static void pie_process_dequeue(int qlen, struct pie_vars *vars, struct sk_buff *skb)
+static bool drop_early(struct Qdisc *sch, u32 backlog, struct pie_vars *vars,
+		       struct pie_params *params, u32 packet_size)
+{
+	u32 rnd;
+	u32 local_prob = vars->prob;
+	u32 mtu = psched_mtu(qdisc_dev(sch));
+
+	/* If there is still burst allowance left skip random early drop */
+	if (vars->burst_time > 0)
+		return false;
+
+	/* If current delay is less than half of target, and
+	 * if drop prob is low already, disable early_drop
+	 */
+	if ((vars->qdelay < params->target / 2) &&
+		(vars->prob < MAX_PROB / 5))
+		return false;
+
+	/* If we have fewer than 2 mtu-sized packets, disable drop_early,
+	 * similar to min_th in RED
+	 */
+	if (backlog < 2 * mtu)
+		return false;
+
+	/* If bytemode is turned on, use packet size to compute new
+	 * probablity. Smaller packets will have lower drop prob in this case
+	 */
+	if (params->bytemode && packet_size <= mtu)
+		local_prob = (local_prob / mtu) * packet_size;
+	else
+		local_prob = vars->prob;
+
+	rnd = prandom_u32();
+	if (rnd < local_prob)
+		return true;
+
+	return false;
+}
+
+static void pie_process_dequeue(int qlen, struct pie_vars *vars,
+				struct sk_buff *skb)
 {
 	/* If current queue is about 10 packets or more and dq_count is unset
 	 * we have enough packets to calculate the drain rate. Save
@@ -135,7 +175,8 @@ static void pie_process_dequeue(int qlen, struct pie_vars *vars, struct sk_buff 
 	}
 }
 
-static void calculate_probability(u32 qlen, struct pie_params *params, struct pie_vars *vars)
+static void calculate_probability(u32 qlen, struct pie_params *params,
+				  struct pie_vars *vars)
 {
 	psched_time_t qdelay = 0;	/* in pschedtime */
 	psched_time_t qdelay_old = vars->qdelay;	/* in pschedtime */
