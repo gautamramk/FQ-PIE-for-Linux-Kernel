@@ -206,7 +206,7 @@ static void fq_pie_timer(struct timer_list *t)
 
 	for (i = 0; i < q->params.flows_cnt; i++)
 		calculate_probability(q->flows[i].backlog,
-				      &q->params.params_pie, &q->flows[i].vars);
+				    		&q->flows[i].vars, &q->params.params_pie);
 
 	// reset the timer to fire after 'tupdate'. tupdate is in jiffies.
 	if (q->params.params_pie.tupdate)
@@ -236,7 +236,6 @@ static int fq_pie_change(struct Qdisc *sch, struct nlattr *opt,
 	unsigned int num_dropped = 0;
 	unsigned int qlen;
 	int err;
-	int i;
 
 	if (!opt)
 		return -EINVAL;
@@ -288,13 +287,8 @@ static int fq_pie_change(struct Qdisc *sch, struct nlattr *opt,
 	if (tb[TCA_FQ_PIE_ECN])
 		q->params.params_pie.ecn = nla_get_u32(tb[TCA_FQ_PIE_ECN]);
 
-	if (tb[TCA_FQ_PIE_QUANTUM]) {
+	if (tb[TCA_FQ_PIE_QUANTUM])
 		q->quantum = nla_get_u32(tb[TCA_FQ_PIE_QUANTUM]);
-		for (i = 0; i < q->params.flows_cnt; i++) {
-			if (q->flows[i].deficit > q->quantum)
-				q->flows[i].deficit = q->quantum;
-		}
-	}
 
 	if (tb[TCA_FQ_PIE_BYTEMODE])
 		q->params.params_pie.bytemode = nla_get_u32(tb[TCA_FQ_PIE_BYTEMODE]);
@@ -457,4 +451,5 @@ MODULE_DESCRIPTION("Flow Queue Proportional Integral controller Enhanced (FQ-PIE
 MODULE_AUTHOR("Gautam Ramakrishnan");
 MODULE_AUTHOR("V Saicharan");
 MODULE_AUTHOR("Mohit Bhasi");
+MODULE_AUTHOR("Leslie Monis");
 MODULE_LICENSE("GPL");

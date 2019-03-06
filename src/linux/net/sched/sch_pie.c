@@ -17,25 +17,19 @@
  * University of Oslo, Norway.
  *
  * References:
- * IETF draft submission: http://tools.ietf.org/html/draft-pan-aqm-pie-00
- * IEEE  Conference on High Performance Switching and Routing 2013 :
- * "PIE: A * Lightweight Control Scheme to Address the Bufferbloat Problem"
+ * RFC 8033: https://tools.ietf.org/html/rfc8034
  */
 
-#include <linux/module.h>
-#include <linux/slab.h>
-#include <linux/types.h>
-#include <linux/kernel.h>
-#include <linux/errno.h>
-#include <linux/skbuff.h>
-#include <net/pkt_sched.h>
-#include <net/inet_ecn.h>
 #include <net/pie.h>
 
-#define QUEUE_THRESHOLD 10000
-#define DQCOUNT_INVALID -1
-#define MAX_PROB  0xffffffff
-#define PIE_SCALE 8
+/* private data for the Qdisc */
+struct pie_sched_data {
+	struct pie_params params;
+	struct pie_vars vars;
+	struct pie_stats stats;
+	struct timer_list adapt_timer;
+	struct Qdisc *sch;
+};
 
 static int pie_qdisc_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 			     struct sk_buff **to_free)
@@ -70,6 +64,8 @@ static int pie_qdisc_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 
 out:
 	q->stats.dropped++;
+	q->vars.accu_prob = 0;
+	q->vars.accu_prob_overflows = 0;
 	return qdisc_drop(skb, sch, to_free);
 }
 
@@ -111,7 +107,8 @@ static int pie_change(struct Qdisc *sch, struct nlattr *opt,
 
 	/* tupdate is in jiffies */
 	if (tb[TCA_PIE_TUPDATE])
-		q->params.tupdate = usecs_to_jiffies(nla_get_u32(tb[TCA_PIE_TUPDATE]));
+		q->params.tupdate =
+			usecs_to_jiffies(nla_get_u32(tb[TCA_PIE_TUPDATE]));
 
 	if (tb[TCA_PIE_LIMIT]) {
 		u32 limit = nla_get_u32(tb[TCA_PIE_LIMIT]);
@@ -152,10 +149,9 @@ static void pie_timer(struct timer_list *t)
 	struct pie_sched_data *q = from_timer(q, t, adapt_timer);
 	struct Qdisc *sch = q->sch;
 	spinlock_t *root_lock = qdisc_lock(qdisc_root_sleeping(sch));
-	u32 qlen = sch->qstats.backlog;
 
 	spin_lock(root_lock);
-	calculate_probability(qlen, &q->params, &q->vars);
+	calculate_probability(sch->qstats.backlog, &q->vars, &q->params);
 
 	/* reset the timer to fire after 'tupdate'. tupdate is in jiffies. */
 	if (q->params.tupdate)
@@ -200,7 +196,8 @@ static int pie_dump(struct Qdisc *sch, struct sk_buff *skb)
 			((u32)PSCHED_TICKS2NS(q->params.target)) /
 			NSEC_PER_USEC) ||
 	    nla_put_u32(skb, TCA_PIE_LIMIT, sch->limit) ||
-	    nla_put_u32(skb, TCA_PIE_TUPDATE, jiffies_to_usecs(q->params.tupdate)) ||
+	    nla_put_u32(skb, TCA_PIE_TUPDATE,
+			jiffies_to_usecs(q->params.tupdate)) ||
 	    nla_put_u32(skb, TCA_PIE_ALPHA, q->params.alpha) ||
 	    nla_put_u32(skb, TCA_PIE_BETA, q->params.beta) ||
 	    nla_put_u32(skb, TCA_PIE_ECN, q->params.ecn) ||
@@ -237,12 +234,12 @@ static int pie_dump_stats(struct Qdisc *sch, struct gnet_dump *d)
 static struct sk_buff *pie_qdisc_dequeue(struct Qdisc *sch)
 {
 	struct pie_sched_data *q = qdisc_priv(sch);
-	struct sk_buff *skb;
+	struct sk_buff *skb = qdisc_dequeue_head(sch);
 	u32 qlen = sch->qstats.backlog;
 
-	skb = qdisc_dequeue_head(sch);
 	if (!skb)
 		return NULL;
+
 	pie_process_dequeue(qlen, &q->vars, skb);
 	return skb;
 }
