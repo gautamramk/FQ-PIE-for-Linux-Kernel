@@ -77,7 +77,7 @@ Default value is 1024.
 
 
 .SS quantum
-//left to be done
+quantum signifies the number of bytes that may be dequeued from a queue before switching to the next queue in the deficit round robin scheme.
 
 .SS ecn | noecn
 has the same semantics as
@@ -111,7 +111,8 @@ is turned off.
 
 .SH EXAMPLES
 
-//left to be done
+ # tc qdisc add dev eth0 root fq_pie
+ 
 
 .SH SEE ALSO
 .BR tc-fq_codel (8),
