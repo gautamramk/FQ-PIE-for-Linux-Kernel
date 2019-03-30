@@ -954,7 +954,7 @@ enum {
 #define TCA_PIE_MAX   (__TCA_PIE_MAX - 1)
 
 struct tc_pie_xstats {
-	__u32 prob;             /* current probability */
+	__u64 prob;             /* current probability */
 	__u32 delay;            /* current delay in ms */
 	__u32 avg_dq_rate;      /* current average dq_rate in bits/pie_time */
 	__u32 packets_in;       /* total number of packets enqueued */
@@ -986,11 +986,10 @@ struct tc_fq_pie_xstats {
 	__u32 dropped;          /* packets dropped due to fq_pie_action */
 	__u32 overlimit;        /* dropped due to lack of space in queue */
 	__u32 ecn_mark;         /* packets marked with ecn*/
-	__u32	new_flow_count; /* number of time packets
-				 * created a 'new flow'
-				 */
-	__u32	new_flows_len;	/* count of flows in new list */
-	__u32	old_flows_len;	/* count of flows in old list */
+	__u32 new_flow_count;   /* number of time packets
+				   created a 'new flow' */
+	__u32 new_flows_len;	/* count of flows in new list */
+	__u32 old_flows_len;	/* count of flows in old list */
 };
 
 /* CBS */
@@ -1050,6 +1049,7 @@ enum {
 	TCA_CAKE_INGRESS,
 	TCA_CAKE_ACK_FILTER,
 	TCA_CAKE_SPLIT_GSO,
+	TCA_CAKE_FWMARK,
 	__TCA_CAKE_MAX
 };
 #define TCA_CAKE_MAX	(__TCA_CAKE_MAX - 1)

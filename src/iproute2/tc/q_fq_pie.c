@@ -1,7 +1,5 @@
 /*
- * Fair Queue Pie
- *
- *  Copyright (C) 2012,2015 Eric Dumazet <edumazet@google.com>
+ * Flow Queue Pie
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
@@ -50,9 +48,10 @@
 static void explain(void)
 {
 	fprintf(stderr, "Usage: ... fq_pie [ limit PACKETS ] [ flows NUMBER ]\n");
-    fprintf(stderr, "                  [alpha NUMBER] [beta NUMBER]        ");
-	fprintf(stderr, "                    [ target TIME us] [tupdate TIME us]\n");
-	fprintf(stderr, "                    [bytemode] [ quantum BYTES ] [ [no]ecn ] [ecnprob PERCENTAGE]\n");
+    fprintf(stderr, "                  [ alpha NUMBER ] [ beta NUMBER ]\n");
+	fprintf(stderr, "                  [ target TIME us] [ tupdate TIME us ]\n");
+	fprintf(stderr, "                  [ bytemode ] [ quantum BYTES ] [ [no]ecn ]\n");
+	fprintf(stderr, "                  [ ecnprob PERCENTAGE ]\n");
 }
 
 #define ALPHA_MAX 32

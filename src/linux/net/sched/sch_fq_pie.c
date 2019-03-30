@@ -1,68 +1,81 @@
-#include <linux/module.h>
-#include <linux/types.h>
-#include <linux/kernel.h>
-#include <linux/jiffies.h>
-#include <linux/string.h>
-#include <linux/in.h>
-#include <linux/errno.h>
-#include <linux/init.h>
-#include <linux/skbuff.h>
+/*
+ * net/sched/sch_fq_pie.c
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation; either version 2
+ * of the License.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * Author: Mohit P. Tahiliani <tahiliani@nitk.edu.in>
+ * Author: Sachin D. Patil <sdp.sachin@gmail.com>
+ * Author: Mohit Bhasi <mohitbhasi1998@gmail.com>
+ * Author: V Saicharan <vsaicharan1998@gmail.com>
+ * Author: Leslie Monis <lesliemonis@gmail.com>
+ * Author: Gautam Ramakrishnan <gautamramk@gmail.com>
+ *
+ * References:
+ * RFC 8033: https://tools.ietf.org/html/rfc8033
+ */
+
 #include <linux/jhash.h>
-#include <linux/slab.h>
 #include <linux/vmalloc.h>
-#include <net/netlink.h>
-#include <net/pkt_sched.h>
-#include <net/pkt_cls.h>
 #include <net/pie.h>
+
+struct fq_pie_params {
+	struct pie_params p_params;
+	u32 ecn_prob;
+	u32 flows_cnt;
+};
 
 struct fq_pie_stats {
 	u32 packets_in;		/* total number of packets enqueued */
 	u32 dropped;		/* packets dropped due to fq_pie action */
 	u32 overlimit;		/* dropped due to lack of space in queue */
 	u32 ecn_mark;		/* packets marked with ECN */
-	u32 new_flow_count; /* number of time packets created a new flow */
+	u32 new_flow_count;	/* number of time packets created a new flow */
 };
 
-struct fq_pie_params {
-	struct pie_params params_pie;
-	u32 ecn_prob;
-	u32 flows_cnt;
+/* statistics gathering */
+struct pie_stats {
+	u32 packets_in;		/* total number of packets enqueued */
+	u32 dropped;		/* packets dropped due to pie_action */
+	u32 overlimit;		/* dropped due to lack of space in queue */
+	u32 maxq;		/* maximum queue size */
+	u32 ecn_mark;		/* packets marked with ECN */
 };
 
 struct fq_pie_flow {
+	s32 deficit;		/* number of credits remaining for the flow */
+	u32 backlog;		/* size of data in the flow */
+	u32 qlen;		/* number of packets in the flow */
 	struct sk_buff *head;
 	struct sk_buff *tail;
 	struct list_head flowchain;
-	s32 deficit;
-	u32 backlog;
-	u32 qlen;
-	struct pie_vars vars;
-	struct pie_stats stats;
+	struct pie_vars vars;	/* pie vars for the flow */
+	struct pie_stats stats;	/* pie stats for the flow */
 };
 
 struct fq_pie_sched_data {
-	u32 quantum;
+	u32 quantum;		/* number of credits in deficit round robin */
 	struct fq_pie_flow *flows;
+	struct Qdisc *sch;
 	struct fq_pie_params params;
 	struct fq_pie_stats stats;
-	struct Qdisc *sch;
-	struct timer_list adapt_timer;
 	struct list_head old_flows;
 	struct list_head new_flows;
+	struct timer_list adapt_timer;
 };
 
-static unsigned int fq_pie_hash(const struct fq_pie_sched_data *q,
-				struct sk_buff *skb)
+static void fq_pie_params_init(struct fq_pie_params *params)
 {
-	return reciprocal_scale(skb_get_hash(skb), q->params.flows_cnt);
-}
-
-static unsigned int fq_pie_classify(struct sk_buff *skb, struct Qdisc *sch,
-				    int *qerr)
-{
-	struct fq_pie_sched_data *q = qdisc_priv(sch);
-
-	return fq_pie_hash(q, skb) + 1;
+	pie_params_init(&params->p_params);
+	params->ecn_prob = 10;
+	params->flows_cnt = 1024;
 }
 
 static inline void flow_queue_add(struct fq_pie_flow *flow,
@@ -81,32 +94,27 @@ static int fq_pie_qdisc_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 {
 	struct fq_pie_sched_data *q = qdisc_priv(sch);
 	struct fq_pie_flow *sel_flow;
-	int uninitialized_var(ret);
-	u32 uninitialized_var(pkt_len);
+	u32 pkt_len;
 	u32 idx;
 	u8 enqueue = false;
 
-	idx = fq_pie_classify(skb, sch, &ret);
-	if (idx == 0) {
-		if (ret & __NET_XMIT_BYPASS)
-			qdisc_qstats_drop(sch);
-		__qdisc_drop(skb, to_free);
-		return ret;
-	}
-	idx--;
+	/* Classifies packet into corresponding flow */
+	idx = reciprocal_scale(skb_get_hash(skb), q->params.flows_cnt);
 	sel_flow = &q->flows[idx];
 
+	/* Checks if the qdisc is full */
 	if (unlikely(qdisc_qlen(sch) >= sch->limit)) {
 		q->stats.overlimit++;
 		sel_flow->stats.overlimit++;
 		goto out;
 	}
 
-	if (!drop_early(sch, sel_flow->backlog, &sel_flow->vars,
-			&q->params.params_pie, skb->len)) {
+	if (!drop_early(sch, sel_flow->backlog, skb->len, &sel_flow->vars,
+			&q->params.p_params)) {
 		enqueue = true;
-	} else if (q->params.params_pie.ecn &&
-		   sel_flow->vars.prob <= (MAX_PROB / 100) * q->params.ecn_prob &&
+	} else if (q->params.p_params.ecn &&
+		   sel_flow->vars.prob <=
+		   (MAX_PROB / 100) * q->params.ecn_prob &&
 		   INET_ECN_set_ce(skb)) {
 		/* If packet is ecn capable, mark it if drop probability
 		 * is lower than the parameter ecn_prob, else drop it.
@@ -140,6 +148,19 @@ out:
 	return qdisc_drop(skb, sch, to_free);
 }
 
+static const struct nla_policy fq_pie_policy[TCA_FQ_PIE_MAX + 1] = {
+	[TCA_FQ_PIE_TARGET] = {.type = NLA_U32},
+	[TCA_FQ_PIE_LIMIT] = {.type = NLA_U32},
+	[TCA_FQ_PIE_TUPDATE] = {.type = NLA_U32},
+	[TCA_FQ_PIE_ALPHA] = {.type = NLA_U32},
+	[TCA_FQ_PIE_BETA] = {.type = NLA_U32},
+	[TCA_FQ_PIE_ECN] = {.type = NLA_U32},
+	[TCA_FQ_PIE_QUANTUM] = {.type = NLA_U32},
+	[TCA_FQ_PIE_BYTEMODE] = {.type = NLA_U32},
+	[TCA_FQ_PIE_FLOWS] = {.type = NLA_U32},
+	[TCA_FQ_PIE_ECN_PROB] = {.type = NLA_U32}
+};
+
 static inline struct sk_buff *dequeue_head(struct fq_pie_flow *flow)
 {
 	struct sk_buff *skb = flow->head;
@@ -155,7 +176,7 @@ static struct sk_buff *fq_pie_qdisc_dequeue(struct Qdisc *sch)
 	struct sk_buff *skb = NULL;
 	struct fq_pie_flow *flow;
 	struct list_head *head;
-	u32 uninitialized_var(pkt_len);
+	u32 pkt_len;
 
 begin:
 	head = &q->new_flows;
@@ -166,6 +187,7 @@ begin:
 	}
 
 	flow = list_first_entry(head, struct fq_pie_flow, flowchain);
+	/* Flow has exhausted all its credits */
 	if (flow->deficit <= 0) {
 		flow->deficit += q->quantum;
 		list_move_tail(&flow->flowchain, &q->old_flows);
@@ -191,41 +213,9 @@ begin:
 	flow->qlen--;
 	flow->deficit -= pkt_len;
 	flow->backlog -= pkt_len;
-	pie_process_dequeue(flow->backlog, &flow->vars, skb);
+	pie_process_dequeue(flow->backlog, skb, &flow->vars);
 	return skb;
 }
-
-static void fq_pie_timer(struct timer_list *t)
-{
-	struct fq_pie_sched_data *q = from_timer(q, t, adapt_timer);
-	struct Qdisc *sch = q->sch;
-	spinlock_t *root_lock = qdisc_lock(qdisc_root_sleeping(sch));
-	int i;
-
-	spin_lock(root_lock);
-
-	for (i = 0; i < q->params.flows_cnt; i++)
-		calculate_probability(q->flows[i].backlog,
-				    		&q->flows[i].vars, &q->params.params_pie);
-
-	// reset the timer to fire after 'tupdate'. tupdate is in jiffies.
-	if (q->params.params_pie.tupdate)
-		mod_timer(&q->adapt_timer, jiffies + q->params.params_pie.tupdate);
-	spin_unlock(root_lock);
-}
-
-static const struct nla_policy fq_pie_policy[TCA_FQ_PIE_MAX + 1] = {
-	[TCA_FQ_PIE_TARGET] = {.type = NLA_U32},
-	[TCA_FQ_PIE_LIMIT] = {.type = NLA_U32},
-	[TCA_FQ_PIE_TUPDATE] = {.type = NLA_U32},
-	[TCA_FQ_PIE_ALPHA] = {.type = NLA_U32},
-	[TCA_FQ_PIE_BETA] = {.type = NLA_U32},
-	[TCA_FQ_PIE_ECN] = {.type = NLA_U32},
-	[TCA_FQ_PIE_QUANTUM] = {.type = NLA_U32},
-	[TCA_FQ_PIE_BYTEMODE] = {.type = NLA_U32},
-	[TCA_FQ_PIE_FLOWS] = {.type = NLA_U32},
-	[TCA_FQ_PIE_ECN_PROB] = {.type = NLA_U32}
-};
 
 static int fq_pie_change(struct Qdisc *sch, struct nlattr *opt,
 			 struct netlink_ext_ack *extack)
@@ -261,17 +251,19 @@ static int fq_pie_change(struct Qdisc *sch, struct nlattr *opt,
 		u32 target = nla_get_u32(tb[TCA_FQ_PIE_TARGET]);
 
 		/* convert to pschedtime */
-		q->params.params_pie.target = PSCHED_NS2TICKS((u64)target * NSEC_PER_USEC);
+		q->params.p_params.target =
+		PSCHED_NS2TICKS((u64)target * NSEC_PER_USEC);
 	}
 
 	/* tupdate is in jiffies */
 	if (tb[TCA_FQ_PIE_TUPDATE])
-		q->params.params_pie.tupdate = usecs_to_jiffies(nla_get_u32(tb[TCA_FQ_PIE_TUPDATE]));
+		q->params.p_params.tupdate =
+		usecs_to_jiffies(nla_get_u32(tb[TCA_FQ_PIE_TUPDATE]));
 
 	if (tb[TCA_FQ_PIE_LIMIT]) {
 		u32 limit = nla_get_u32(tb[TCA_FQ_PIE_LIMIT]);
 
-		q->params.params_pie.limit = limit;
+		q->params.p_params.limit = limit;
 		sch->limit = limit;
 	}
 
@@ -279,19 +271,20 @@ static int fq_pie_change(struct Qdisc *sch, struct nlattr *opt,
 		q->params.ecn_prob = nla_get_u32(tb[TCA_FQ_PIE_ECN_PROB]);
 
 	if (tb[TCA_FQ_PIE_ALPHA])
-		q->params.params_pie.alpha = nla_get_u32(tb[TCA_FQ_PIE_ALPHA]);
+		q->params.p_params.alpha = nla_get_u32(tb[TCA_FQ_PIE_ALPHA]);
 
 	if (tb[TCA_FQ_PIE_BETA])
-		q->params.params_pie.beta = nla_get_u32(tb[TCA_FQ_PIE_BETA]);
+		q->params.p_params.beta = nla_get_u32(tb[TCA_FQ_PIE_BETA]);
 
 	if (tb[TCA_FQ_PIE_ECN])
-		q->params.params_pie.ecn = nla_get_u32(tb[TCA_FQ_PIE_ECN]);
+		q->params.p_params.ecn = nla_get_u32(tb[TCA_FQ_PIE_ECN]);
 
 	if (tb[TCA_FQ_PIE_QUANTUM])
 		q->quantum = nla_get_u32(tb[TCA_FQ_PIE_QUANTUM]);
 
 	if (tb[TCA_FQ_PIE_BYTEMODE])
-		q->params.params_pie.bytemode = nla_get_u32(tb[TCA_FQ_PIE_BYTEMODE]);
+		q->params.p_params.bytemode =
+		nla_get_u32(tb[TCA_FQ_PIE_BYTEMODE]);
 
 	/* Drop excess packets if new limit is lower */
 	qlen = sch->q.qlen;
@@ -308,6 +301,27 @@ static int fq_pie_change(struct Qdisc *sch, struct nlattr *opt,
 	return 0;
 }
 
+static void fq_pie_timer(struct timer_list *t)
+{
+	struct fq_pie_sched_data *q = from_timer(q, t, adapt_timer);
+	struct Qdisc *sch = q->sch;
+	spinlock_t *root_lock = qdisc_lock(qdisc_root_sleeping(sch));
+	u16 idx;
+
+	spin_lock(root_lock);
+
+	for (idx = 0; idx < q->params.flows_cnt; idx++)
+		calculate_probability(q->flows[idx].backlog,
+				      &q->flows[idx].vars,
+				      &q->params.p_params);
+
+	// reset the timer to fire after 'tupdate'. tupdate is in jiffies.
+	if (q->params.p_params.tupdate)
+		mod_timer(&q->adapt_timer,
+			  jiffies + q->params.p_params.tupdate);
+	spin_unlock(root_lock);
+}
+
 static int fq_pie_init(struct Qdisc *sch, struct nlattr *opt,
 		       struct netlink_ext_ack *extack)
 {
@@ -315,11 +329,9 @@ static int fq_pie_init(struct Qdisc *sch, struct nlattr *opt,
 	int err;
 	int i;
 
-	pie_params_init(&q->params.params_pie);
+	fq_pie_params_init(&q->params);
 	sch->limit = 10 * 1024;
-	q->params.ecn_prob = 10;
-	q->params.params_pie.limit = sch->limit;
-	q->params.flows_cnt = 1024;
+	q->params.p_params.limit = sch->limit;
 	q->quantum = psched_mtu(qdisc_dev(sch));
 	q->sch = sch;
 
@@ -370,17 +382,19 @@ static int fq_pie_dump(struct Qdisc *sch, struct sk_buff *skb)
 
 	/* convert target from pschedtime to us */
 	if (nla_put_u32(skb, TCA_FQ_PIE_TARGET,
-		((u32)PSCHED_TICKS2NS(q->params.params_pie.target)) /
-		NSEC_PER_USEC) ||
-		nla_put_u32(skb, TCA_FQ_PIE_LIMIT, sch->limit) ||
-		nla_put_u32(skb, TCA_FQ_PIE_TUPDATE, jiffies_to_usecs(q->params.params_pie.tupdate)) ||
-		nla_put_u32(skb, TCA_FQ_PIE_ALPHA, q->params.params_pie.alpha) ||
-		nla_put_u32(skb, TCA_FQ_PIE_BETA, q->params.params_pie.beta) ||
-		nla_put_u32(skb, TCA_FQ_PIE_ECN, q->params.params_pie.ecn) ||
-		nla_put_u32(skb, TCA_FQ_PIE_BYTEMODE, q->params.params_pie.bytemode) ||
-		nla_put_u32(skb, TCA_FQ_PIE_QUANTUM, q->quantum) ||
-		nla_put_u32(skb, TCA_FQ_PIE_FLOWS, q->params.flows_cnt) ||
-		nla_put_u32(skb, TCA_FQ_PIE_ECN_PROB, q->params.ecn_prob))
+			((u32)PSCHED_TICKS2NS(q->params.p_params.target)) /
+			NSEC_PER_USEC) ||
+	    nla_put_u32(skb, TCA_FQ_PIE_LIMIT, sch->limit) ||
+	    nla_put_u32(skb, TCA_FQ_PIE_TUPDATE,
+			jiffies_to_usecs(q->params.p_params.tupdate)) ||
+	    nla_put_u32(skb, TCA_FQ_PIE_ALPHA, q->params.p_params.alpha) ||
+	    nla_put_u32(skb, TCA_FQ_PIE_BETA, q->params.p_params.beta) ||
+	    nla_put_u32(skb, TCA_FQ_PIE_ECN, q->params.p_params.ecn) ||
+	    nla_put_u32(skb, TCA_FQ_PIE_BYTEMODE,
+			q->params.p_params.bytemode) ||
+	    nla_put_u32(skb, TCA_FQ_PIE_QUANTUM, q->quantum) ||
+	    nla_put_u32(skb, TCA_FQ_PIE_FLOWS, q->params.flows_cnt) ||
+	    nla_put_u32(skb, TCA_FQ_PIE_ECN_PROB, q->params.ecn_prob))
 		goto nla_put_failure;
 
 	return nla_nest_end(skb, opts);
@@ -412,6 +426,28 @@ static int fq_pie_dump_stats(struct Qdisc *sch, struct gnet_dump *d)
 	return gnet_stats_copy_app(d, &st, sizeof(st));
 }
 
+static void fq_pie_reset(struct Qdisc *sch)
+{
+	struct fq_pie_sched_data *q = qdisc_priv(sch);
+	u16 idx;
+
+	INIT_LIST_HEAD(&q->new_flows);
+	INIT_LIST_HEAD(&q->old_flows);
+	for (idx = 0; idx < q->params.flows_cnt; idx++) {
+		struct fq_pie_flow *flow = q->flows + idx;
+
+		/* Removes all packets from flow */
+		rtnl_kfree_skbs(flow->head, flow->tail);
+		flow->head = NULL;
+
+		INIT_LIST_HEAD(&flow->flowchain);
+		pie_vars_init(&flow->vars);
+	}
+
+	sch->q.qlen = 0;
+	sch->qstats.backlog = 0;
+}
+
 static void fq_pie_destroy(struct Qdisc *sch)
 {
 	struct fq_pie_sched_data *q = qdisc_priv(sch);
@@ -428,6 +464,7 @@ static struct Qdisc_ops fq_pie_qdisc_ops __read_mostly = {
 	.peek		= qdisc_peek_dequeued,
 	.init		= fq_pie_init,
 	.destroy	= fq_pie_destroy,
+	.reset		= fq_pie_reset,
 	.change		= fq_pie_change,
 	.dump		= fq_pie_dump,
 	.dump_stats	= fq_pie_dump_stats,
@@ -448,8 +485,10 @@ module_init(fq_pie_module_init);
 module_exit(fq_pie_module_exit);
 
 MODULE_DESCRIPTION("Flow Queue Proportional Integral controller Enhanced (FQ-PIE) scheduler");
-MODULE_AUTHOR("Gautam Ramakrishnan");
-MODULE_AUTHOR("V Saicharan");
+MODULE_AUTHOR("Mohit P. Tahiliani");
+MODULE_AUTHOR("Sachin D. Patil");
 MODULE_AUTHOR("Mohit Bhasi");
+MODULE_AUTHOR("V Saicharan");
 MODULE_AUTHOR("Leslie Monis");
+MODULE_AUTHOR("Gautam Ramakrishnan");
 MODULE_LICENSE("GPL");

@@ -1,4 +1,5 @@
-/* Copyright (C) 2013 Cisco Systems, Inc, 2013.
+/*
+ * include/net/pie.h  Proportional Integral Controller Enhanced
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -10,15 +11,18 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * Author: Vijay Subramanian <vijaynsu@cisco.com>
- * Author: Mythili Prabhu <mysuryan@cisco.com>
+ * Original Author: Vijay Subramanian <vijaynsu@cisco.com>
+ * Original Author: Mythili Prabhu <mysuryan@cisco.com>
  *
  * ECN support is added by Naeem Khademi <naeemk@ifi.uio.no>
  * University of Oslo, Norway.
  *
  * References:
- * RFC 8033: https://tools.ietf.org/html/rfc8034
+ * RFC 8033: https://tools.ietf.org/html/rfc8033
  */
+
+#ifndef __NET_SCHED_PIE_H
+#define __NET_SCHED_PIE_H
 
 #include <linux/module.h>
 #include <linux/slab.h>
@@ -59,15 +63,6 @@ struct pie_vars {
 	u8 accu_prob_overflows;	/* overflows of accu_prob */
 };
 
-/* statistics gathering */
-struct pie_stats {
-	u32 packets_in;		/* total number of packets enqueued */
-	u32 dropped;		/* packets dropped due to pie_action */
-	u32 overlimit;		/* dropped due to lack of space in queue */
-	u32 maxq;		/* maximum queue size */
-	u32 ecn_mark;		/* packets marked with ECN */
-};
-
 static void pie_params_init(struct pie_params *params)
 {
 	params->alpha = 2;
@@ -89,7 +84,8 @@ static void pie_vars_init(struct pie_vars *vars)
 	vars->accu_prob_overflows = 0;
 }
 
-static bool drop_early(struct Qdisc *sch, u32 backlog, struct pie_vars *vars, struct pie_params *params, u32 packet_size)
+static bool drop_early(struct Qdisc *sch, u32 qlen, u32 packet_size,
+		       struct pie_vars *vars, struct pie_params *params)
 {
 	u64 rnd;
 	u64 local_prob = vars->prob;
@@ -109,7 +105,7 @@ static bool drop_early(struct Qdisc *sch, u32 backlog, struct pie_vars *vars, st
 	/* If we have fewer than 2 mtu-sized packets, disable drop_early,
 	 * similar to min_th in RED
 	 */
-	if (backlog < 2 * mtu)
+	if (qlen < 2 * mtu)
 		return false;
 
 	/* If bytemode is turned on, use packet size to compute new
@@ -147,14 +143,14 @@ static bool drop_early(struct Qdisc *sch, u32 backlog, struct pie_vars *vars, st
 	return false;
 }
 
-static void pie_process_dequeue(u32 backlog, struct pie_vars *vars, struct sk_buff *skb)
+static void pie_process_dequeue(u32 qlen, struct sk_buff *skb,
+				struct pie_vars *vars)
 {
-
 	/* If current queue is about 10 packets or more and dq_count is unset
 	 * we have enough packets to calculate the drain rate. Save
 	 * current time as dq_tstamp and start measurement cycle.
 	 */
-	if (backlog >= QUEUE_THRESHOLD && vars->dq_count == DQCOUNT_INVALID) {
+	if (qlen >= QUEUE_THRESHOLD && vars->dq_count == DQCOUNT_INVALID) {
 		vars->dq_tstamp = psched_get_time();
 		vars->dq_count = 0;
 	}
@@ -193,7 +189,7 @@ static void pie_process_dequeue(u32 backlog, struct pie_vars *vars, struct sk_bu
 			 * dq_count to 0 to re-enter the if block when the next
 			 * packet is dequeued
 			 */
-			if (backlog < QUEUE_THRESHOLD) {
+			if (qlen < QUEUE_THRESHOLD) {
 				vars->dq_count = DQCOUNT_INVALID;
 			} else {
 				vars->dq_count = 0;
@@ -210,7 +206,8 @@ static void pie_process_dequeue(u32 backlog, struct pie_vars *vars, struct sk_bu
 	}
 }
 
-static void calculate_probability(u32 backlog, struct pie_vars *vars, struct pie_params *params)
+static void calculate_probability(u32 qlen, struct pie_vars *vars,
+				  struct pie_params *params)
 {
 	psched_time_t qdelay = 0;	/* in pschedtime */
 	psched_time_t qdelay_old = vars->qdelay;	/* in pschedtime */
@@ -223,14 +220,14 @@ static void calculate_probability(u32 backlog, struct pie_vars *vars, struct pie
 	vars->qdelay_old = vars->qdelay;
 
 	if (vars->avg_dq_rate > 0)
-		qdelay = (backlog << PIE_SCALE) / vars->avg_dq_rate;
+		qdelay = (qlen << PIE_SCALE) / vars->avg_dq_rate;
 	else
 		qdelay = 0;
 
 	/* If qdelay is zero and qlen is not, it means qlen is very small, less
 	 * than dequeue_rate, so we do not update probabilty in this round
 	 */
-	if (qdelay == 0 && backlog != 0)
+	if (qdelay == 0 && qlen != 0)
 		update_prob = false;
 
 	/* In the algorithm, alpha and beta are between 0 and 2 with typical
@@ -302,10 +299,11 @@ static void calculate_probability(u32 backlog, struct pie_vars *vars, struct pie
 	 */
 
 	if (qdelay == 0 && qdelay_old == 0 && update_prob)
-		vars->prob = (vars->prob * 98) / 100;
+		/* Reduce drop probability to 98.4% */
+		vars->prob -= vars->prob / 64u;
 
 	vars->qdelay = qdelay;
-	vars->qlen_old = backlog;
+	vars->qlen_old = qlen;
 
 	/* We restart the measurement cycle if the following conditions are met
 	 * 1. If the delay has been low for 2 consecutive Tupdate periods
@@ -319,3 +317,5 @@ static void calculate_probability(u32 backlog, struct pie_vars *vars, struct pie
 	    vars->avg_dq_rate > 0)
 		pie_vars_init(vars);
 }
+
+#endif  /* __NET_SCHED_PIE_H */

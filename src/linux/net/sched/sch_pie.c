@@ -17,10 +17,19 @@
  * University of Oslo, Norway.
  *
  * References:
- * RFC 8033: https://tools.ietf.org/html/rfc8034
+ * RFC 8033: https://tools.ietf.org/html/rfc8033
  */
 
 #include <net/pie.h>
+
+/* statistics gathering */
+struct pie_stats {
+	u32 packets_in;		/* total number of packets enqueued */
+	u32 dropped;		/* packets dropped due to pie_action */
+	u32 overlimit;		/* dropped due to lack of space in queue */
+	u32 maxq;		/* maximum queue size */
+	u32 ecn_mark;		/* packets marked with ECN */
+};
 
 /* private data for the Qdisc */
 struct pie_sched_data {
@@ -42,7 +51,8 @@ static int pie_qdisc_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 		goto out;
 	}
 
-	if (!drop_early(sch, sch->qstats.backlog, &q->vars, &q->params, skb->len)) {
+	if (!drop_early(sch, sch->qstats.backlog, skb->len, &q->vars,
+			&q->params)) {
 		enqueue = true;
 	} else if (q->params.ecn && (q->vars.prob <= MAX_PROB / 10) &&
 		   INET_ECN_set_ce(skb)) {
@@ -235,12 +245,11 @@ static struct sk_buff *pie_qdisc_dequeue(struct Qdisc *sch)
 {
 	struct pie_sched_data *q = qdisc_priv(sch);
 	struct sk_buff *skb = qdisc_dequeue_head(sch);
-	u32 qlen = sch->qstats.backlog;
 
 	if (!skb)
 		return NULL;
 
-	pie_process_dequeue(qlen, &q->vars, skb);
+	pie_process_dequeue(sch->qstats.backlog, skb, &q->vars);
 	return skb;
 }
 
