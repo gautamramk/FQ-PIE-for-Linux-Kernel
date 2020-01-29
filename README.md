@@ -6,6 +6,8 @@
 
 #### Accompanying webpage - https://fq-pie.herokuapp.com/
 
+## Major Edit
+From Linux v5.5 onwards PIE uses timestamps to calculate Queue Delay by default. The latest FQ-PIE code which will be added to Linux v5.6 will also use timestamps by default.
 
 ## Overview
 
